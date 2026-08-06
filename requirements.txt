@@ -1,5 +1,7 @@
-streamlit==1.31.0
-pandas==2.2.0
-openpyxl==3.1.2
-beautifulsoup4==4.12.3
-pdfplumber==0.10.4
+streamlit
+pandas
+openpyxl
+beautifulsoup4
+pdfplumber
+lxml
+html5lib
