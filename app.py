@@ -13,20 +13,21 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 st.set_page_config(page_title="Rekonsiliasi Meta & KBI", layout="wide")
 
 st.title("📊 Aplikasi Rekonsiliasi Transaksi Meta vs KBI")
-st.markdown("Unggah dokumen **List ACC**, **Trade Registry KBI (PDF)**, **Closed Trades (HTML)**, dan **Orders Report (HTML)** untuk melakukan pencocokan data secara otomatis.")
 
 # --- SIDEBAR: FILE UPLOADER ---
 with st.sidebar:
     st.header("📂 Upload Dokumen")
     file_acc = st.file_uploader("1. List ACC (.xlsx)", type=["xlsx"])
-    file_kbi = st.file_uploader("2. Trade Registry KBI (.pdf)", type=["pdf"])
+    
+    # PERUBAHAN: BISA UPLOAD BANYAK FILE PDF KBI SEKALIGUS
+    file_kbi_list = st.file_uploader("2. Semua Dokumen KBI (.pdf) - BISA BANYAK FILE", type=["pdf"], accept_multiple_files=True)
+    
     file_closed = st.file_uploader("3. Closed Trades Report (.htm/.html)", type=["htm", "html"])
     file_orders = st.file_uploader("4. Orders Report (.htm/.html)", type=["htm", "html"])
     
     process_btn = st.button("🚀 Proses Rekonsiliasi", type="primary")
 
 # --- CORE FUNCTIONS ---
-
 def parse_kbi_pdf(pdf_file):
     pdf_trades = []
     current_type = 'Buy'
@@ -38,15 +39,14 @@ def parse_kbi_pdf(pdf_file):
             
             for line in text.split('\n'):
                 line_lower = line.strip().lower()
-                # Deteksi transisi section Buy/Sell
                 if line_lower == 'buy':
                     current_type = 'Buy'
                 elif line_lower == 'sell':
                     current_type = 'Sell'
                 
-                # Regex mendeteksi baris transaksi KBI
-                # Pola: Jam (00:00:00) ... CC60XXXX ... Qty ... Kontrak (6 digit) ... Price
-                match = re.search(r"(\d{2}:\d{2}:\d{2}).*?(CC\d+)\s+[A-Za-z0-9_]+\s+([\d\.]+)\s+\d{6}\s+([\d\,\.]+)", line.replace('|', ' '))
+                # Regex untuk menangkap detail transaksi Trade Registry KBI.
+                # Baris ringkasan di PDF Open/Closed otomatis akan aman terabaikan karena tidak ada Jam.
+                match = re.search(r"(\d{2}:\d{2}:\d{2}).*?(CC\d+)\s+[A-Za-z0-9_\.]+\s+([\d\.]+)\s+\d{6}\s+([\d\,\.]+)", line.replace('|', ' '))
                 if match:
                     time_kbi = match.group(1)
                     acc = match.group(2).replace('CC', '')
@@ -75,7 +75,6 @@ def parse_meta_html(html_file, is_closed=True):
             acc = cols[1].text.strip()
             
             if is_closed:
-                # Kolom Closed Trades
                 open_time = cols[3].text.strip()
                 open_type = cols[4].text.strip().capitalize()
                 vol = float(cols[6].text.strip())
@@ -92,7 +91,6 @@ def parse_meta_html(html_file, is_closed=True):
                     trades.append({'Deal': deal, 'Account': acc, 'Jam_Meta': close_time.split(' ')[1][:8], 
                                    'Type_Meta': close_type, 'Price': close_price, 'Qty': vol, 'Matched': False})
             else:
-                # Kolom Orders Report
                 time_val = cols[2].text.strip()
                 typ = cols[3].text.strip().capitalize()
                 vol = float(cols[5].text.strip())
@@ -124,7 +122,7 @@ def build_excel(df):
                     cell.number_format = '0.00'
                 cell.alignment = Alignment(horizontal="center")
                 
-                # Pewarnaan khusus untuk Catatan (Kolom ke-11)
+                # Pewarnaan Catatan Sesuai Logika Terbaru
                 if c_idx == 11:
                     if "Seharusnya Posisi Masih Open" in str(value):
                         cell.font = Font(color="9C5700")
@@ -139,7 +137,6 @@ def build_excel(df):
                 if c_idx == 3 and value == 'TIDAK ADA':
                     cell.font = Font(color="9C0006")
 
-    # Rapikan Lebar Kolom
     for col in ws.columns:
         max_length = 0
         column = col[0].column_letter
@@ -158,10 +155,11 @@ def build_excel(df):
 
 # --- MAIN EXECUTION ---
 if process_btn:
-    if not (file_acc and file_kbi and file_closed and file_orders):
-        st.error("⚠️ Harap unggah KEMPAT file dokumen terlebih dahulu di menu sebelah kiri.")
+    # Cek apakah file sudah lengkap
+    if not (file_acc and file_kbi_list and file_closed and file_orders):
+        st.error("⚠️ Harap unggah SEMUA dokumen terlebih dahulu di menu sebelah kiri.")
     else:
-        with st.spinner("Sedang memproses data..."):
+        with st.spinner("Sedang memproses data dari PDF dan HTML..."):
             try:
                 # 1. Map Account
                 df_acc = pd.read_excel(file_acc)
@@ -169,12 +167,16 @@ if process_btn:
                 df_acc['Nama'] = df_acc['Nama'].astype(str).str.strip()
                 acc_map = dict(zip(df_acc['Login'], df_acc['Nama']))
 
-                # 2. Extract Data
-                pdf_trades = parse_kbi_pdf(file_kbi)
+                # 2. Extract Data PDF KBI (Bisa baca > 1 PDF sekaligus)
+                pdf_trades = []
+                for pdf_file in file_kbi_list:
+                    pdf_trades.extend(parse_kbi_pdf(pdf_file))
+                    
+                # Extract Data Meta
                 meta_trades = parse_meta_html(file_closed, is_closed=True)
                 order_trades = parse_meta_html(file_orders, is_closed=False)
 
-                # 3. Rekonsiliasi Logic
+                # 3. Logika Rekonsiliasi
                 results = []
                 for p_trade in pdf_trades:
                     acc = p_trade['Account']
@@ -183,13 +185,11 @@ if process_btn:
                     type_kbi = p_trade['Type_KBI']
                     
                     best_match = None
-                    # Cari yang match Harga & Qty
                     for m_trade in meta_trades:
                         if not m_trade['Matched'] and m_trade['Account'] == acc and m_trade['Type_Meta'] == type_kbi and math.isclose(m_trade['Price'], price, rel_tol=1e-5) and math.isclose(m_trade['Qty'], qty_kbi, rel_tol=1e-5):
                             best_match = m_trade
                             break
                             
-                    # Cari yang match Harga Saja
                     if not best_match:
                         for m_trade in meta_trades:
                             if not m_trade['Matched'] and m_trade['Account'] == acc and m_trade['Type_Meta'] == type_kbi and math.isclose(m_trade['Price'], price, rel_tol=1e-5):
@@ -204,7 +204,6 @@ if process_btn:
                         jam_meta = best_match['Jam_Meta']
                         catatan = 'Posisi Seharusnya sudah Closed'
                     else:
-                        # Cek di Orders Report
                         found_in_orders = False
                         for o in order_trades:
                             if o['Account'] == acc and math.isclose(o['Price'], price, rel_tol=1e-5):
@@ -239,17 +238,18 @@ if process_btn:
 
                 df_final = pd.DataFrame(results)
 
-                # Display Results
+                # Tampilkan Tabel
                 st.success(f"✅ Berhasil memproses {len(df_final)} transaksi!")
                 
-                # Highlight in Streamlit UI
                 def color_catatan(val):
-                    color = 'green' if 'Closed' in val else ('orange' if 'Open' in val else 'red')
+                    if 'Closed' in val: color = 'green'
+                    elif 'Open' in val: color = '#9C5700'
+                    else: color = 'red'
                     return f'color: {color}; font-weight: bold;'
                 
                 st.dataframe(df_final.style.map(color_catatan, subset=['Catatan']), use_container_width=True)
 
-                # Download Button
+                # Tombol Download
                 excel_buffer = build_excel(df_final)
                 st.download_button(
                     label="📥 Download Hasil Rekonsiliasi (Excel)",
