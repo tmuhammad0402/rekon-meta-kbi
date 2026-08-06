@@ -9,22 +9,27 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 # Set Page Config
-st.set_page_config(page_title="Rekonsiliasi Meta & KBI (Multi-Day)", layout="wide")
+st.set_page_config(page_title="Rekonsiliasi Meta & KBI", layout="wide")
 
-st.title("📊 Aplikasi Rekonsiliasi Meta vs KBI (Mendukung Multi-Hari)")
+st.title("📊 Aplikasi Rekonsiliasi Transaksi Meta vs KBI")
+st.markdown("Unggah dokumen **List ACC**, **Trade Registry KBI (PDF)**, **Closed Trades (HTML)**, dan **Orders Report (HTML)** untuk melakukan pencocokan data.")
 
 # --- SIDEBAR: FILE UPLOADER ---
 with st.sidebar:
     st.header("📂 Upload Dokumen")
     file_acc = st.file_uploader("1. List ACC (.xlsx)", type=["xlsx"])
     
-    file_kbi_list = st.file_uploader("2. Dokumen KBI (.pdf) - BISA BANYAK FILE", type=["pdf"], accept_multiple_files=True)
-    file_closed_list = st.file_uploader("3. Closed Trades (.htm/.html) - BISA BANYAK FILE", type=["htm", "html"], accept_multiple_files=True)
-    file_orders_list = st.file_uploader("4. Orders Report (.htm/.html) - BISA BANYAK FILE", type=["htm", "html"], accept_multiple_files=True)
+    # Hanya PDF KBI yang bisa banyak file (untuk handle multi-hari)
+    file_kbi_list = st.file_uploader("2. Trade Registry KBI (.pdf) - BISA UPLOAD BANYAK FILE", type=["pdf"], accept_multiple_files=True)
+    
+    # HTM hanya 1 file (karena bisa mencakup multi-tanggal di dalam 1 file)
+    file_closed = st.file_uploader("3. Closed Trades Report (.htm/.html)", type=["htm", "html"])
+    file_orders = st.file_uploader("4. Orders Report (.htm/.html)", type=["htm", "html"])
     
     process_btn = st.button("🚀 Proses Rekonsiliasi", type="primary")
 
 # --- CORE FUNCTIONS ---
+
 def parse_kbi_pdf(pdf_files):
     pdf_trades = []
     
@@ -37,16 +42,18 @@ def parse_kbi_pdf(pdf_files):
                 
                 for line in text.split('\n'):
                     line_lower = line.strip().lower()
+                    # Deteksi transisi section Buy/Sell
                     if line_lower == 'buy':
                         current_type = 'Buy'
                     elif line_lower == 'sell':
                         current_type = 'Sell'
                     
-                    # Regex menangkap transaksi Trade Registry
+                    # Regex mendeteksi baris transaksi KBI (Abaikan ringkasan)
+                    # Pola: Jam (00:00:00) ... CC60XXXX ... Qty ... Kontrak (6 digit) ... Price
                     match = re.search(r"(\d{1,2}:\d{2}:\d{2}).*?(CC\d+)\s+[A-Za-z0-9_\.]+\s+([\d\.]+)\s+\d{6}\s+([\d\,\.]+)", line.replace('|', ' '))
                     if match:
                         time_kbi = match.group(1)
-                        # Standarisasi jam format HH:MM:SS
+                        # Tambahkan 0 di depan jika jam hanya 1 digit (e.g. 7:10:00 -> 07:10:00)
                         if len(time_kbi.split(':')[0]) == 1:
                             time_kbi = "0" + time_kbi
                             
@@ -64,60 +71,60 @@ def parse_kbi_pdf(pdf_files):
                         })
     return pdf_trades
 
-def parse_closed_trades(html_files):
+def parse_closed_trades(html_file):
     trades = []
-    for f in html_files:
-        content = f.read().decode('utf-8', errors='ignore')
-        for line in content.split('<tr '):
-            if '<td align=left>' in line and '</td>' in line:
-                cols = line.split('<td')
-                if len(cols) > 9:
-                    try:
-                        deal = cols[1].split('>')[1].split('<')[0].strip()
-                        acc = cols[2].split('>')[1].split('<')[0].strip()
-                        if not acc.isdigit(): continue
-                        
-                        open_time = cols[4].split('>')[1].split('<')[0].strip()
-                        open_type = cols[5].split('>')[1].split('<')[0].strip().capitalize()
-                        vol = float(cols[7].split('>')[1].split('<')[0].strip())
-                        open_price = float(cols[8].split('>')[1].split('<')[0].replace(' ', '').strip())
-                        
-                        close_time = cols[9].split('>')[1].split('<')[0].strip()
-                        close_price = float(cols[10].split('>')[1].split('<')[0].replace(' ', '').strip())
-                        close_type = 'Sell' if open_type.lower() == 'buy' else 'Buy'
-                        
-                        if ' ' in open_time:
-                            trades.append({'Deal': deal, 'Account': acc, 'Jam_Meta': open_time.split(' ')[1][:8], 
-                                           'Type_Meta': open_type, 'Price': open_price, 'Qty': vol, 'Matched': False})
-                        if ' ' in close_time:
-                            trades.append({'Deal': deal, 'Account': acc, 'Jam_Meta': close_time.split(' ')[1][:8], 
-                                           'Type_Meta': close_type, 'Price': close_price, 'Qty': vol, 'Matched': False})
-                    except Exception:
-                        pass
+    content = html_file.read().decode('utf-8', errors='ignore')
+    # Ekstraksi manual tanpa library berat
+    for line in content.split('<tr '):
+        if '<td align=left>' in line and '</td>' in line:
+            cols = line.split('<td')
+            if len(cols) > 9:
+                try:
+                    deal = cols[1].split('>')[1].split('<')[0].strip()
+                    acc = cols[2].split('>')[1].split('<')[0].strip()
+                    if not acc.isdigit(): continue
+                    
+                    open_time = cols[4].split('>')[1].split('<')[0].strip()
+                    open_type = cols[5].split('>')[1].split('<')[0].strip().capitalize()
+                    vol = float(cols[7].split('>')[1].split('<')[0].strip())
+                    open_price = float(cols[8].split('>')[1].split('<')[0].replace(' ', '').strip())
+                    
+                    close_time = cols[9].split('>')[1].split('<')[0].strip()
+                    close_price = float(cols[10].split('>')[1].split('<')[0].replace(' ', '').strip())
+                    close_type = 'Sell' if open_type.lower() == 'buy' else 'Buy'
+                    
+                    # Ambil jamnya (HH:MM:SS)
+                    if ' ' in open_time:
+                        trades.append({'Deal': deal, 'Account': acc, 'Jam_Meta': open_time.split(' ')[1][:8], 
+                                       'Type_Meta': open_type, 'Price': open_price, 'Qty': vol, 'Matched': False})
+                    if ' ' in close_time:
+                        trades.append({'Deal': deal, 'Account': acc, 'Jam_Meta': close_time.split(' ')[1][:8], 
+                                       'Type_Meta': close_type, 'Price': close_price, 'Qty': vol, 'Matched': False})
+                except Exception:
+                    pass
     return trades
 
-def parse_orders_report(html_files):
+def parse_orders_report(html_file):
     order_trades = []
-    for f in html_files:
-        content = f.read().decode('utf-8', errors='ignore')
-        for line in content.split('<tr '):
-            if '<td align=left>' in line and '</td>' in line:
-                cols = line.split('<td')
-                if len(cols) > 7:
-                    try:
-                        deal = cols[1].split('>')[1].split('<')[0].strip()
-                        acc = cols[2].split('>')[1].split('<')[0].strip()
-                        if not acc.isdigit(): continue
-                        
-                        t = cols[3].split('>')[1].split('<')[0].strip()
-                        typ = cols[4].split('>')[1].split('<')[0].capitalize().strip()
-                        vol = float(cols[6].split('>')[1].split('<')[0].strip())
-                        price = float(cols[7].split('>')[1].split('<')[0].replace(' ', '').strip())
-                        
-                        jam = t.split(' ')[1][:8] if ' ' in t else 'Unknown'
-                        order_trades.append({'Deal': deal, 'Account': acc, 'Jam_Meta': jam, 'Type_Meta': typ, 'Price': price, 'Qty': vol})
-                    except Exception:
-                        pass
+    content = html_file.read().decode('utf-8', errors='ignore')
+    for line in content.split('<tr '):
+        if '<td align=left>' in line and '</td>' in line:
+            cols = line.split('<td')
+            if len(cols) > 7:
+                try:
+                    deal = cols[1].split('>')[1].split('<')[0].strip()
+                    acc = cols[2].split('>')[1].split('<')[0].strip()
+                    if not acc.isdigit(): continue
+                    
+                    t = cols[3].split('>')[1].split('<')[0].strip()
+                    typ = cols[4].split('>')[1].split('<')[0].capitalize().strip()
+                    vol = float(cols[6].split('>')[1].split('<')[0].strip())
+                    price = float(cols[7].split('>')[1].split('<')[0].replace(' ', '').strip())
+                    
+                    jam = t.split(' ')[1][:8] if ' ' in t else 'Unknown'
+                    order_trades.append({'Deal': deal, 'Account': acc, 'Jam_Meta': jam, 'Type_Meta': typ, 'Price': price, 'Qty': vol})
+                except Exception:
+                    pass
     return order_trades
 
 def build_excel(df):
@@ -142,7 +149,7 @@ def build_excel(df):
                     cell.number_format = '0.00'
                 cell.alignment = Alignment(horizontal="center")
                 
-                # Warna Logika Catatan
+                # Pewarnaan khusus untuk Catatan (Kolom ke-11)
                 if c_idx == 11:
                     if "Seharusnya Posisi Masih Open" in str(value):
                         cell.font = Font(color="9C5700")
@@ -157,6 +164,7 @@ def build_excel(df):
                 if c_idx == 3 and value == 'TIDAK ADA':
                     cell.font = Font(color="9C0006")
 
+    # Rapikan Lebar Kolom
     for col in ws.columns:
         max_length = 0
         column = col[0].column_letter
@@ -164,7 +172,8 @@ def build_excel(df):
             try:
                 if len(str(cell.value)) > max_length:
                     max_length = len(cell.value)
-            except: pass
+            except:
+                pass
         ws.column_dimensions[column].width = max_length + 2
 
     excel_data = io.BytesIO()
@@ -174,10 +183,10 @@ def build_excel(df):
 
 # --- MAIN EXECUTION ---
 if process_btn:
-    if not (file_acc and file_kbi_list and file_closed_list and file_orders_list):
-        st.error("⚠️ Harap unggah SEMUA dokumen terlebih dahulu (bisa banyak file sekaligus per kategori).")
+    if not (file_acc and file_kbi_list and file_closed and file_orders):
+        st.error("⚠️ Harap unggah SEMUA dokumen terlebih dahulu di menu sebelah kiri.")
     else:
-        with st.spinner("Sedang memproses seluruh data multihari..."):
+        with st.spinner("Sedang memproses data dari PDF dan HTML..."):
             try:
                 # 1. Map Account
                 df_acc = pd.read_excel(file_acc)
@@ -185,10 +194,10 @@ if process_btn:
                 df_acc['Nama'] = df_acc['Nama'].astype(str).str.strip()
                 acc_map = dict(zip(df_acc['Login'], df_acc['Nama']))
 
-                # 2. Extract Data PDF & HTML (Semua diproses massal)
+                # 2. Extract Data
                 pdf_trades = parse_kbi_pdf(file_kbi_list)
-                meta_trades = parse_closed_trades(file_closed_list)
-                order_trades = parse_orders_report(file_orders_list)
+                meta_trades = parse_closed_trades(file_closed)
+                order_trades = parse_orders_report(file_orders)
 
                 # 3. Logika Rekonsiliasi
                 results = []
@@ -199,13 +208,13 @@ if process_btn:
                     type_kbi = p_trade['Type_KBI']
                     
                     best_match = None
-                    # Cari match sempurna (Harga dan Volume)
+                    # Cari yang match Harga & Qty di Closed Trades
                     for m_trade in meta_trades:
                         if not m_trade['Matched'] and m_trade['Account'] == acc and m_trade['Type_Meta'] == type_kbi and math.isclose(m_trade['Price'], price, rel_tol=1e-5) and math.isclose(m_trade['Qty'], qty_kbi, rel_tol=1e-5):
                             best_match = m_trade
                             break
                             
-                    # Jika tidak sempurna, cari yang harganya match
+                    # Cari yang match Harga Saja
                     if not best_match:
                         for m_trade in meta_trades:
                             if not m_trade['Matched'] and m_trade['Account'] == acc and m_trade['Type_Meta'] == type_kbi and math.isclose(m_trade['Price'], price, rel_tol=1e-5):
@@ -220,6 +229,7 @@ if process_btn:
                         jam_meta = best_match['Jam_Meta']
                         catatan = 'Posisi Seharusnya sudah Closed'
                     else:
+                        # Cek di Orders Report (Untuk Posisi Masih Open)
                         found_in_orders = False
                         for o in order_trades:
                             if o['Account'] == acc and math.isclose(o['Price'], price, rel_tol=1e-5):
@@ -254,9 +264,10 @@ if process_btn:
 
                 df_final = pd.DataFrame(results)
 
-                # Tampilkan Tabel Output
-                st.success(f"✅ Berhasil memproses total {len(df_final)} transaksi!")
+                # Display Results
+                st.success(f"✅ Berhasil memproses {len(df_final)} transaksi!")
                 
+                # Highlight in Streamlit UI
                 def color_catatan(val):
                     if 'Closed' in val: color = 'green'
                     elif 'Open' in val: color = '#9C5700'
