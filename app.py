@@ -12,15 +12,19 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 st.set_page_config(page_title="Rekonsiliasi Meta & KBI", layout="wide")
 
 st.title("📊 Aplikasi Rekonsiliasi Transaksi Meta vs KBI")
-st.markdown("Unggah dokumen **List ACC**, **Trade Registry KBI (PDF)**, **Closed Trades (HTML)**, dan **Orders Report (HTML)** untuk melakukan pencocokan data.")
+st.markdown("Unggah dokumen **List ACC**, **Dokumen KBI (PDF)**, **Closed Trades (HTML)**, dan **Orders Report (HTML)** untuk melakukan pencocokan data.")
 
 # --- SIDEBAR: FILE UPLOADER ---
 with st.sidebar:
     st.header("📂 Upload Dokumen")
     file_acc = st.file_uploader("1. List ACC (.xlsx)", type=["xlsx"])
     
-    # Hanya untuk Trade Registry (1 File)
-    file_kbi = st.file_uploader("2. Trade Registry KBI (.pdf) - Hanya file 'TradeRegistrySummary'", type=["pdf"])
+    # PDF KBI bisa banyak file, nama file diperjelas
+    file_kbi_list = st.file_uploader(
+        "2. Dokumen KBI (.pdf) - Upload file TradeRegistrySummary, OpenPositionStatement, dan ClosedPositionHistoryListing", 
+        type=["pdf"], 
+        accept_multiple_files=True
+    )
     
     # HTM hanya 1 file
     file_closed = st.file_uploader("3. Closed Trades Report (.htm/.html)", type=["htm", "html"])
@@ -30,43 +34,45 @@ with st.sidebar:
 
 # --- CORE FUNCTIONS ---
 
-def parse_kbi_pdf(pdf_file):
+def parse_kbi_pdf(pdf_files):
     pdf_trades = []
-    current_type = 'Buy'
     
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if not text: continue
-            
-            for line in text.split('\n'):
-                line_lower = line.strip().lower()
-                # Deteksi transisi section Buy/Sell
-                if line_lower == 'buy':
-                    current_type = 'Buy'
-                elif line_lower == 'sell':
-                    current_type = 'Sell'
+    # Looping untuk memproses banyak file PDF sekaligus
+    for pdf_file in pdf_files:
+        current_type = 'Buy'
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if not text: continue
                 
-                # Regex mendeteksi baris transaksi KBI (Abaikan ringkasan)
-                match = re.search(r"(\d{1,2}:\d{2}:\d{2}).*?(CC\d+)\s+[A-Za-z0-9_\.]+\s+([\d\.]+)\s+\d{6}\s+([\d\,\.]+)", line.replace('|', ' '))
-                if match:
-                    time_kbi = match.group(1)
-                    # Tambahkan 0 di depan jika jam hanya 1 digit
-                    if len(time_kbi.split(':')[0]) == 1:
-                        time_kbi = "0" + time_kbi
-                        
-                    acc = match.group(2).replace('CC', '')
-                    qty = float(match.group(3))
-                    price = float(match.group(4).replace(',', ''))
+                for line in text.split('\n'):
+                    line_lower = line.strip().lower()
+                    # Deteksi transisi section Buy/Sell
+                    if line_lower == 'buy':
+                        current_type = 'Buy'
+                    elif line_lower == 'sell':
+                        current_type = 'Sell'
                     
-                    pdf_trades.append({
-                        'Account': acc,
-                        'Jam_KBI': time_kbi,
-                        'Type_KBI': current_type,
-                        'Price': price,
-                        'Qty': qty,
-                        'Matched': False
-                    })
+                    # Regex mendeteksi baris transaksi KBI (Hanya akan menangkap isi Trade Registry, mengabaikan Open/Closed PDF yang tidak relevan)
+                    match = re.search(r"(\d{1,2}:\d{2}:\d{2}).*?(CC\d+)\s+[A-Za-z0-9_\.]+\s+([\d\.]+)\s+\d{6}\s+([\d\,\.]+)", line.replace('|', ' '))
+                    if match:
+                        time_kbi = match.group(1)
+                        # Tambahkan 0 di depan jika jam hanya 1 digit (misal 7:10:00 menjadi 07:10:00)
+                        if len(time_kbi.split(':')[0]) == 1:
+                            time_kbi = "0" + time_kbi
+                            
+                        acc = match.group(2).replace('CC', '')
+                        qty = float(match.group(3))
+                        price = float(match.group(4).replace(',', ''))
+                        
+                        pdf_trades.append({
+                            'Account': acc,
+                            'Jam_KBI': time_kbi,
+                            'Type_KBI': current_type,
+                            'Price': price,
+                            'Qty': qty,
+                            'Matched': False
+                        })
     return pdf_trades
 
 def parse_closed_trades(html_file):
@@ -145,6 +151,7 @@ def build_excel(df):
                     cell.number_format = '0.00'
                 cell.alignment = Alignment(horizontal="center")
                 
+                # Pewarnaan khusus untuk Catatan
                 if c_idx == 11:
                     if "Seharusnya Posisi Masih Open" in str(value):
                         cell.font = Font(color="9C5700")
@@ -159,6 +166,7 @@ def build_excel(df):
                 if c_idx == 3 and value == 'TIDAK ADA':
                     cell.font = Font(color="9C0006")
 
+    # Rapikan Lebar Kolom
     for col in ws.columns:
         max_length = 0
         column = col[0].column_letter
@@ -177,10 +185,10 @@ def build_excel(df):
 
 # --- MAIN EXECUTION ---
 if process_btn:
-    if not (file_acc and file_kbi and file_closed and file_orders):
+    if not (file_acc and file_kbi_list and file_closed and file_orders):
         st.error("⚠️ Harap unggah SEMUA dokumen terlebih dahulu di menu sebelah kiri.")
     else:
-        with st.spinner("Sedang memproses data dari PDF dan HTML..."):
+        with st.spinner("Sedang memproses data dari PDF KBI dan HTML Meta..."):
             try:
                 # 1. Map Account
                 df_acc = pd.read_excel(file_acc)
@@ -189,7 +197,7 @@ if process_btn:
                 acc_map = dict(zip(df_acc['Login'], df_acc['Nama']))
 
                 # 2. Extract Data
-                pdf_trades = parse_kbi_pdf(file_kbi)
+                pdf_trades = parse_kbi_pdf(file_kbi_list)
                 meta_trades = parse_closed_trades(file_closed)
                 order_trades = parse_orders_report(file_orders)
 
