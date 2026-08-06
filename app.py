@@ -20,7 +20,7 @@ with st.sidebar:
     file_acc = st.file_uploader("1. List ACC (.xlsx)", type=["xlsx"])
     
     # PERUBAHAN: BISA UPLOAD BANYAK FILE PDF KBI SEKALIGUS
-    file_kbi_list = st.file_uploader("2. Semua Dokumen KBI (.pdf) - BISA BANYAK FILE", type=["pdf"], accept_multiple_files=True)
+    file_kbi_list = st.file_uploader("2. Semua Dokumen KBI (.pdf) - Trade Registry, Open Position, Closed Position", type=["pdf"], accept_multiple_files=True)
     
     file_closed = st.file_uploader("3. Closed Trades Report (.htm/.html)", type=["htm", "html"])
     file_orders = st.file_uploader("4. Orders Report (.htm/.html)", type=["htm", "html"])
