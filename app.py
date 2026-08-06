@@ -19,10 +19,10 @@ with st.sidebar:
     st.header("📂 Upload Dokumen")
     file_acc = st.file_uploader("1. List ACC (.xlsx)", type=["xlsx"])
     
-    # Hanya PDF KBI yang bisa banyak file (untuk handle multi-hari)
-    file_kbi_list = st.file_uploader("2. Trade Registry KBI (.pdf) - BISA UPLOAD BANYAK FILE", type=["pdf"], accept_multiple_files=True)
+    # Hanya untuk Trade Registry (1 File)
+    file_kbi = st.file_uploader("2. Trade Registry KBI (.pdf) - Hanya file 'TradeRegistrySummary'", type=["pdf"])
     
-    # HTM hanya 1 file (karena bisa mencakup multi-tanggal di dalam 1 file)
+    # HTM hanya 1 file
     file_closed = st.file_uploader("3. Closed Trades Report (.htm/.html)", type=["htm", "html"])
     file_orders = st.file_uploader("4. Orders Report (.htm/.html)", type=["htm", "html"])
     
@@ -30,51 +30,48 @@ with st.sidebar:
 
 # --- CORE FUNCTIONS ---
 
-def parse_kbi_pdf(pdf_files):
+def parse_kbi_pdf(pdf_file):
     pdf_trades = []
+    current_type = 'Buy'
     
-    for pdf_file in pdf_files:
-        current_type = 'Buy'
-        with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if not text: continue
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if not text: continue
+            
+            for line in text.split('\n'):
+                line_lower = line.strip().lower()
+                # Deteksi transisi section Buy/Sell
+                if line_lower == 'buy':
+                    current_type = 'Buy'
+                elif line_lower == 'sell':
+                    current_type = 'Sell'
                 
-                for line in text.split('\n'):
-                    line_lower = line.strip().lower()
-                    # Deteksi transisi section Buy/Sell
-                    if line_lower == 'buy':
-                        current_type = 'Buy'
-                    elif line_lower == 'sell':
-                        current_type = 'Sell'
-                    
-                    # Regex mendeteksi baris transaksi KBI (Abaikan ringkasan)
-                    # Pola: Jam (00:00:00) ... CC60XXXX ... Qty ... Kontrak (6 digit) ... Price
-                    match = re.search(r"(\d{1,2}:\d{2}:\d{2}).*?(CC\d+)\s+[A-Za-z0-9_\.]+\s+([\d\.]+)\s+\d{6}\s+([\d\,\.]+)", line.replace('|', ' '))
-                    if match:
-                        time_kbi = match.group(1)
-                        # Tambahkan 0 di depan jika jam hanya 1 digit (e.g. 7:10:00 -> 07:10:00)
-                        if len(time_kbi.split(':')[0]) == 1:
-                            time_kbi = "0" + time_kbi
-                            
-                        acc = match.group(2).replace('CC', '')
-                        qty = float(match.group(3))
-                        price = float(match.group(4).replace(',', ''))
+                # Regex mendeteksi baris transaksi KBI (Abaikan ringkasan)
+                match = re.search(r"(\d{1,2}:\d{2}:\d{2}).*?(CC\d+)\s+[A-Za-z0-9_\.]+\s+([\d\.]+)\s+\d{6}\s+([\d\,\.]+)", line.replace('|', ' '))
+                if match:
+                    time_kbi = match.group(1)
+                    # Tambahkan 0 di depan jika jam hanya 1 digit
+                    if len(time_kbi.split(':')[0]) == 1:
+                        time_kbi = "0" + time_kbi
                         
-                        pdf_trades.append({
-                            'Account': acc,
-                            'Jam_KBI': time_kbi,
-                            'Type_KBI': current_type,
-                            'Price': price,
-                            'Qty': qty,
-                            'Matched': False
-                        })
+                    acc = match.group(2).replace('CC', '')
+                    qty = float(match.group(3))
+                    price = float(match.group(4).replace(',', ''))
+                    
+                    pdf_trades.append({
+                        'Account': acc,
+                        'Jam_KBI': time_kbi,
+                        'Type_KBI': current_type,
+                        'Price': price,
+                        'Qty': qty,
+                        'Matched': False
+                    })
     return pdf_trades
 
 def parse_closed_trades(html_file):
     trades = []
     content = html_file.read().decode('utf-8', errors='ignore')
-    # Ekstraksi manual tanpa library berat
     for line in content.split('<tr '):
         if '<td align=left>' in line and '</td>' in line:
             cols = line.split('<td')
@@ -93,7 +90,6 @@ def parse_closed_trades(html_file):
                     close_price = float(cols[10].split('>')[1].split('<')[0].replace(' ', '').strip())
                     close_type = 'Sell' if open_type.lower() == 'buy' else 'Buy'
                     
-                    # Ambil jamnya (HH:MM:SS)
                     if ' ' in open_time:
                         trades.append({'Deal': deal, 'Account': acc, 'Jam_Meta': open_time.split(' ')[1][:8], 
                                        'Type_Meta': open_type, 'Price': open_price, 'Qty': vol, 'Matched': False})
@@ -149,7 +145,6 @@ def build_excel(df):
                     cell.number_format = '0.00'
                 cell.alignment = Alignment(horizontal="center")
                 
-                # Pewarnaan khusus untuk Catatan (Kolom ke-11)
                 if c_idx == 11:
                     if "Seharusnya Posisi Masih Open" in str(value):
                         cell.font = Font(color="9C5700")
@@ -164,7 +159,6 @@ def build_excel(df):
                 if c_idx == 3 and value == 'TIDAK ADA':
                     cell.font = Font(color="9C0006")
 
-    # Rapikan Lebar Kolom
     for col in ws.columns:
         max_length = 0
         column = col[0].column_letter
@@ -183,7 +177,7 @@ def build_excel(df):
 
 # --- MAIN EXECUTION ---
 if process_btn:
-    if not (file_acc and file_kbi_list and file_closed and file_orders):
+    if not (file_acc and file_kbi and file_closed and file_orders):
         st.error("⚠️ Harap unggah SEMUA dokumen terlebih dahulu di menu sebelah kiri.")
     else:
         with st.spinner("Sedang memproses data dari PDF dan HTML..."):
@@ -195,7 +189,7 @@ if process_btn:
                 acc_map = dict(zip(df_acc['Login'], df_acc['Nama']))
 
                 # 2. Extract Data
-                pdf_trades = parse_kbi_pdf(file_kbi_list)
+                pdf_trades = parse_kbi_pdf(file_kbi)
                 meta_trades = parse_closed_trades(file_closed)
                 order_trades = parse_orders_report(file_orders)
 
@@ -208,13 +202,11 @@ if process_btn:
                     type_kbi = p_trade['Type_KBI']
                     
                     best_match = None
-                    # Cari yang match Harga & Qty di Closed Trades
                     for m_trade in meta_trades:
                         if not m_trade['Matched'] and m_trade['Account'] == acc and m_trade['Type_Meta'] == type_kbi and math.isclose(m_trade['Price'], price, rel_tol=1e-5) and math.isclose(m_trade['Qty'], qty_kbi, rel_tol=1e-5):
                             best_match = m_trade
                             break
                             
-                    # Cari yang match Harga Saja
                     if not best_match:
                         for m_trade in meta_trades:
                             if not m_trade['Matched'] and m_trade['Account'] == acc and m_trade['Type_Meta'] == type_kbi and math.isclose(m_trade['Price'], price, rel_tol=1e-5):
@@ -229,7 +221,6 @@ if process_btn:
                         jam_meta = best_match['Jam_Meta']
                         catatan = 'Posisi Seharusnya sudah Closed'
                     else:
-                        # Cek di Orders Report (Untuk Posisi Masih Open)
                         found_in_orders = False
                         for o in order_trades:
                             if o['Account'] == acc and math.isclose(o['Price'], price, rel_tol=1e-5):
@@ -267,7 +258,6 @@ if process_btn:
                 # Display Results
                 st.success(f"✅ Berhasil memproses {len(df_final)} transaksi!")
                 
-                # Highlight in Streamlit UI
                 def color_catatan(val):
                     if 'Closed' in val: color = 'green'
                     elif 'Open' in val: color = '#9C5700'
